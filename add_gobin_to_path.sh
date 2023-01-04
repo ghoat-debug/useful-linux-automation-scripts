@@ -1,5 +1,5 @@
 #!/bin/bash
-
+#script automatically adds go/bin to path saving you some time
 # Check if the path is already set in the .bashrc file
 if grep -Fxq 'export PATH=$PATH:~/go/bin' ~/.bashrc
 then
@@ -7,12 +7,12 @@ then
   :
 else
   # The path is not set, add it to the .bashrc file
-  echo 'export PATH=$PATH:~/lorde/go/bin' >> ~/.bashrc
+# Add /home/user/go/bin to the PATH environment variable
+  echo 'export PATH=$PATH:/home/user/go/bin' >> ~/.bashrc
+  echo 'export PATH=$PATH:/home/user/go/bin' >> ~/.zshrc
 fi
-
-# Reload the .bashrc file to apply the changes
+# Reload the Bash and Zsh shells to apply the changes
 source ~/.bashrc
+source ~/.zshrc
 
-#this script automatically adds go/bin to path
-#
 
