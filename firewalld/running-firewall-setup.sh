@@ -25,21 +25,24 @@ echo "✅ Backed up current firewalld configuration to $BACKUP_DIR"
 # ==========================================
 echo "🔄 Enhancing default FedoraWorkstation zone..."
 
-# Enable basic port scan protection
-firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" limit value="5/m" accept'
-firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv6" limit value="5/m" accept'
+# Enable basic port scan protection - need to specify connection elements
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" protocol value="tcp" limit value="5/m" accept'
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv6" protocol value="tcp" limit value="5/m" accept'
 
 # Drop invalid packets - helps prevent various scan techniques
-firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule ct state INVALID drop'
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" ct state INVALID drop'
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv6" ct state INVALID drop'
 
 # Rate limit new connections to prevent SYN floods
 firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule tcp flags="syn" ct state NEW limit value="10/s" accept'
 
 # Block null scans (SYN packets with no flags set)
-firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule tcp flags="FIN,SYN,RST,ACK" tcp-flags="SYN" drop'
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" tcp flags="FIN,SYN,RST,ACK" tcp-flags="SYN" drop'
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv6" tcp flags="FIN,SYN,RST,ACK" tcp-flags="SYN" drop'
 
 # Enable logging for rejected packets (helpful for debugging)
-firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule pkttype="broadcast" log prefix="BROADCAST: " level="warning" limit value="5/m" drop'
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" pkttype="broadcast" log prefix="BROADCAST: " level="warning" limit value="5/m" drop'
+firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv6" pkttype="broadcast" log prefix="BROADCAST: " level="warning" limit value="5/m" drop'
 
 # Allow localhost services only from localhost
 # This ensures services you test locally are only accessible from your machine
@@ -58,8 +61,10 @@ firewall-cmd --permanent --new-zone=fortress
 firewall-cmd --permanent --zone=fortress --set-target=DROP
 
 # Strict connection tracking
-firewall-cmd --permanent --zone=fortress --add-rich-rule='rule ct state RELATED,ESTABLISHED accept'
-firewall-cmd --permanent --zone=fortress --add-rich-rule='rule ct state INVALID drop'
+firewall-cmd --permanent --zone=fortress --add-rich-rule='rule family="ipv4" ct state RELATED,ESTABLISHED accept'
+firewall-cmd --permanent --zone=fortress --add-rich-rule='rule family="ipv6" ct state RELATED,ESTABLISHED accept'
+firewall-cmd --permanent --zone=fortress --add-rich-rule='rule family="ipv4" ct state INVALID drop'
+firewall-cmd --permanent --zone=fortress --add-rich-rule='rule family="ipv6" ct state INVALID drop'
 
 # Outbound connections: only essential services
 # Allow DNS (your local Pi-hole will handle this)
@@ -80,7 +85,7 @@ firewall-cmd --permanent --zone=fortress --add-rich-rule='rule family="ipv6" por
 firewall-cmd --permanent --zone=fortress --add-service=dhcpv6-client
 
 # Rate limit ICMP to prevent ICMP floods but allow basic connectivity checks
-firewall-cmd --permanent --zone=fortress --add-rich-rule='rule protocol value="icmp" limit value="10/s" accept'
+firewall-cmd --permanent --zone=fortress --add-rich-rule='rule family="ipv4" protocol value="icmp" limit value="10/s" accept'
 firewall-cmd --permanent --zone=fortress --add-rich-rule='rule family="ipv6" protocol value="ipv6-icmp" limit value="10/s" accept'
 
 # Extra security: log and drop port scans
