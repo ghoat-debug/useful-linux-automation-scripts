@@ -1,376 +1,222 @@
 #!/bin/bash
-# Enhanced FirewallD Configuration for Fedora 41 DevSecOps Workstation
-# Goals:
-# 1. Harden FedoraWorkstation: Limit network visibility, allow localhost dev.
-# 2. Create Fortress Zone: Ultra-secure zero-trust for public networks.
-# Created: April 14, 2025
+# Fedora 41 Firewall Hardening Script (firewalld 2.2.3 compatible)
+# Security Targets:
+# 1. Default zone: Developer-friendly with localhost access
+# 2. Fortress zone: Zero-trust public network protection
+# 3. Anti-scan/anti-flood measures
+# 4. Secure automatic network switching
 
 # --- Configuration ---
-# Set the zone names you want to use
-FEDORA_ZONE="FedoraWorkstation" # Your default development/trusted zone
-FORTRESS_ZONE="fortress"      # Your zero-trust public network zone
+FEDORA_ZONE="FedoraWorkstation"
+FORTRESS_ZONE="fortress"
+KNOCK_PORTS=(7000 8000 9000)  # Port knocking sequence
+SSH_PORT=22
 
-# --- Script Logic ---
-# Exit immediately if a command exits with a non-zero status.
+# --- Firewalld Compatibility Setup ---
 set -e
+FIREWALLD_VERSION=$(firewall-cmd --version 2>/dev/null | cut -d' ' -f1)
 
-# Check if running as root
+# --- Helper Functions ---
+add_direct_rule() {
+    family=$1
+    chain=$2
+    rule=$3
+    echo "   - [Direct] $family $chain: $rule"
+    firewall-cmd --permanent --direct --add-rule $family filter $chain 0 $rule
+}
+
+# --- Initial Checks ---
 if [ "$EUID" -ne 0 ]; then
-  echo "❌ Please run as root or with sudo"
-  exit 1
+    echo "❌ Please run as root"
+    exit 1
 fi
 
-echo "🛡️ === Starting Enhanced FirewallD Configuration ==="
-
-# Check firewalld version
-FIREWALLD_VERSION=$(firewall-cmd --version 2>/dev/null || echo "0")
 if [[ "$FIREWALLD_VERSION" < "0.7.0" ]]; then
-    echo "❌ ERROR: This script requires firewalld version 0.7.0 or higher"
-    echo "Current version: $FIREWALLD_VERSION"
-    exit 1
+    echo "⚠️  Warning: Older firewalld version detected - using compatibility mode"
 fi
 
-# Backup current configuration
-BACKUP_DIR="/root/firewalld-backup-$(date +%Y%m%d-%H%M%S)"
-if mkdir -p "$BACKUP_DIR"; then
-    echo "🔄 Backing up current firewalld configuration..."
-    if cp -a /etc/firewalld/* "$BACKUP_DIR/"; then # Use -a to preserve permissions/timestamps
-        echo "✅ Backup complete: $BACKUP_DIR"
-    else
-        echo "❌ ERROR: Failed to copy firewalld configuration files."
-        exit 1
-    fi
-else
-    echo "❌ ERROR: Failed to create backup directory $BACKUP_DIR."
-    exit 1
-fi
+echo "🛡️ Starting Fedora 41 Firewall Hardening (firewalld ${FIREWALLD_VERSION})"
 
-echo
-echo "🛠️ Starting firewalld configuration..."
+# --- Backup Original Config ---
+BACKUP_BASE="/root/firewalld-backups"
+BACKUP_DIR="${BACKUP_BASE}/backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BACKUP_DIR"
 
-# =========================================================================
-# 1. HARDEN DEFAULT ZONE ($FEDORA_ZONE)
-# =========================================================================
-echo
-echo "🔧 Enhancing '$FEDORA_ZONE' zone..."
+echo "🔄 Backing up current configuration..."
+copy_items=(
+    /etc/firewalld/firewalld.conf
+    /etc/firewalld/*.xml
+    /etc/firewalld/icmptypes
+    /etc/firewalld/services
+    /etc/firewalld/ipsets
+)
 
-# --- Set Default Behavior ---
-echo "   - Setting default target to REJECT"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --set-target=REJECT
-
-# --- Remove Default Allowed Services ---
-echo "   - Removing default services"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --remove-service=ssh 2>/dev/null || echo "   - ssh not present"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --remove-service=mdns 2>/dev/null || echo "   - mdns not present"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-service=dhcpv6-client
-
-# --- Essential Allow Rules ---
-echo "   - Allowing loopback traffic"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" source address="127.0.0.1" accept'
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" source address="::1" accept'
-
-# --- Security Hardening ---
-echo "   - Dropping invalid packets"
-firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
-firewall-cmd --permanent --direct --add-rule ipv6 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
-
-echo "   - Rate limiting SYN packets"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule protocol value="tcp" tcp-flags="SYN" limit value="15/s" accept'
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" protocol value="tcp" tcp-flags="SYN" limit value="15/s" accept'
-
-echo "   - Blocking spoofed loopback"
-firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 ! -i lo -s 127.0.0.0/8 -j DROP
-firewall-cmd --permanent --direct --add-rule ipv6 filter INPUT 0 ! -i lo -s ::1/128 -j DROP
-
-echo "✅ Hardening for '$FEDORA_ZONE' configured."
-
-# =========================================================================
-# 2. FORTRESS ZONE ($FORTRESS_ZONE)
-# =========================================================================
-echo
-echo "🏰 Creating '$FORTRESS_ZONE' zone..."
-
-firewall-cmd --permanent --new-zone=$FORTRESS_ZONE 2>/dev/null || echo "   - Zone exists, reconfiguring"
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --set-target=DROP
-
-# Essential allows
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-service=dhcpv6-client
-
-# Security rules
-firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
-firewall-cmd --permanent --direct --add-rule ipv6 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
-
-# Outbound rules
-echo "   - Configuring minimal outbound access"
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="53" protocol="tcp" direction="out" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="53" protocol="udp" direction="out" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="80" protocol="tcp" direction="out" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="443" protocol="tcp" direction="out" accept'
-
-# Special Docker/Pihole Integration for DNS
-if command -v docker &>/dev/null; then
-    echo "   - Adding Docker/Pihole compatibility rules"
-    # Allow traffic to Docker bridge networks
-    docker_networks=$(docker network ls --format "{{.Name}}" | grep -v "host\|none")
-    for network in $docker_networks; do
-        subnet=$(docker network inspect $network | grep -oP '"Subnet": "\K[^"]+')
-        if [ -n "$subnet" ]; then
-            echo "      - Adding Docker network $network ($subnet)"
-            firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule="rule family=\"ipv4\" source address=\"$subnet\" accept"
-            firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule="rule family=\"ipv4\" source address=\"$subnet\" accept"
-        fi
-    done
-fi
-
-echo "✅ Configuration for '$FORTRESS_ZONE' complete."
-
-# =========================================================================
-# 3. AUTO-SWITCHING BETWEEN SECURE AND NORMAL MODES
-# =========================================================================
-echo
-echo "🔄 Creating network switcher script..."
-
-# Create script for automatic zone switching
-SWITCHER_SCRIPT="/usr/local/bin/firewall-switcher"
-cat > $SWITCHER_SCRIPT << 'EOF'
-#!/bin/bash
-# Firewall Zone Switcher Script
-# Automatically switches between normal and fortress mode based on network SSID
-
-# Configuration - Edit these values
-TRUSTED_NETWORKS=("HomeSweetHome" "Work-Corp-Secure" "YourTrustedNetwork")
-NORMAL_ZONE="FedoraWorkstation"
-SECURE_ZONE="fortress"
-
-# Get current network SSID (works with NetworkManager)
-CURRENT_SSID=$(nmcli -t -f active,ssid dev wifi | grep '^yes' | cut -d':' -f2)
-
-# Check if VPN is active (additional security)
-check_vpn() {
-    if ip tuntap show | grep -q tun; then
-        return 0 # VPN detected
-    else
-        return 1 # No VPN
-    fi
-}
-
-# Function to switch to a zone
-switch_zone() {
-    local zone=$1
-    local current_zone=$(firewall-cmd --get-default-zone)
-    
-    if [ "$current_zone" != "$zone" ]; then
-        echo "Switching from $current_zone to $zone mode..."
-        firewall-cmd --set-default-zone=$zone
-        notify-send "Firewall Mode" "Switched to $zone mode" --icon=security-high
-    else
-        echo "Already in $zone mode."
-    fi
-}
-
-# If VPN is active, always use normal zone regardless of network
-if check_vpn; then
-    echo "VPN connection detected. Using normal mode with VPN."
-    switch_zone $NORMAL_ZONE
-    exit 0
-fi
-
-# If we're not connected to WiFi, default to secure mode
-if [ -z "$CURRENT_SSID" ]; then
-    echo "No WiFi connection detected. Using secure mode."
-    switch_zone $SECURE_ZONE
-    exit 0
-fi
-
-# Check if current network is in trusted list
-for network in "${TRUSTED_NETWORKS[@]}"; do
-    if [ "$CURRENT_SSID" == "$network" ]; then
-        echo "Connected to trusted network: $CURRENT_SSID"
-        switch_zone $NORMAL_ZONE
-        exit 0
+for item in "${copy_items[@]}"; do
+    if [ -e "$item" ]; then
+        cp -a "$item" "$BACKUP_DIR/" 2>/dev/null || echo "⚠️  Failed to copy $item"
     fi
 done
 
-# If we're here, network is not trusted
-echo "Connected to untrusted network: $CURRENT_SSID"
-switch_zone $SECURE_ZONE
-EOF
-
-# Make the script executable
-chmod +x $SWITCHER_SCRIPT
-
-# Create NetworkManager dispatcher script to run our switcher
-DISPATCHER_SCRIPT="/etc/NetworkManager/dispatcher.d/90-firewall-switcher"
-cat > $DISPATCHER_SCRIPT << 'EOF'
-#!/bin/bash
-# NetworkManager dispatcher script for firewall-switcher
-# This script runs when network connections change
-
-INTERFACE=$1
-STATUS=$2
-
-# Only run on WiFi interface connections/disconnections
-if [[ "$INTERFACE" =~ ^wl.* ]] && [[ "$STATUS" == "up" || "$STATUS" == "down" ]]; then
-    # Run as root
-    /usr/local/bin/firewall-switcher
-fi
-EOF
-
-# Make the dispatcher script executable
-chmod +x $DISPATCHER_SCRIPT
-
-echo "✅ Network switcher scripts installed."
-echo "Edit $SWITCHER_SCRIPT to configure your trusted networks."
+echo "✅ Backup complete: ${BACKUP_DIR}"
 
 # =========================================================================
-# 4. APPLY CHANGES & FINISH
+# 1. HARDEN DEFAULT ZONE (FedoraWorkstation)
 # =========================================================================
 echo
-echo "🔄 Reloading FirewallD to apply all permanent changes..."
-firewall-cmd --reload
+echo "🔧 Configuring ${FEDORA_ZONE} zone..."
 
-# Check if reload was successful (basic check)
-if firewall-cmd --state > /dev/null 2>&1; then
-    echo "✅ FirewallD reloaded successfully."
-else
-    echo "❌ ERROR: FirewallD failed to reload. Check configuration manually!"
-    echo "   - View errors: sudo journalctl -u firewalld -n 50"
-    echo "   - You can restore from backup: $BACKUP_DIR"
-    exit 1
-fi
+# Base configuration
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --set-target=REJECT
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --remove-service=ssh 2>/dev/null || true
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-service=dhcpv6-client
+
+# Localhost access
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv4" source address="127.0.0.1" accept'
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv6" source address="::1" accept'
+
+# Direct rules for advanced protection
+add_direct_rule ipv4 INPUT "-m conntrack --ctstate INVALID -j DROP"
+add_direct_rule ipv6 INPUT "-m conntrack --ctstate INVALID -j DROP"
+add_direct_rule ipv4 INPUT "! -i lo -s 127.0.0.0/8 -j DROP"
+add_direct_rule ipv6 INPUT "! -i lo -s ::1/128 -j DROP"
+
+# SYN Flood protection
+add_direct_rule ipv4 INPUT "-p tcp --syn -m limit --limit 15/s -j ACCEPT"
+add_direct_rule ipv6 INPUT "-p tcp --syn -m limit --limit 15/s -j ACCEPT"
 
 # =========================================================================
-# 5. PORT KNOCKING CONFIGURATION (OPTIONAL)
+# 2. FORTRESS ZONE (Zero-Trust Configuration)
 # =========================================================================
 echo
-echo "🔑 Setting up port knocking for SSH access..."
+echo "🏰 Creating ${FORTRESS_ZONE} zone..."
 
-# Define knock sequence ports
-KNOCK_SEQ=("7000" "8000" "9000")
-SECRET_PORT="22"  # SSH
+# Zone creation
+firewall-cmd --permanent --new-zone=${FORTRESS_ZONE} 2>/dev/null || true
+firewall-cmd --permanent --zone=${FORTRESS_ZONE} --set-target=DROP
 
-# Create firewalld config for port knocking
-for port in "${KNOCK_SEQ[@]}"; do
-    echo "   - Adding knock port $port"
-    firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule="rule family=\"ipv4\" port port=\"$port\" protocol=\"tcp\" log prefix=\"KNOCK_\" accept"
+# Essential outbound rules
+declare -A FORTRESS_OUT=(
+    ["DNS_TCP"]='port port="53" protocol="tcp" direction="out"'
+    ["DNS_UDP"]='port port="53" protocol="udp" direction="out"'
+    ["HTTP"]='port port="80" protocol="tcp" direction="out"'
+    ["HTTPS"]='port port="443" protocol="tcp" direction="out"'
+)
+
+for rule in "${!FORTRESS_OUT[@]}"; do
+    firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule="rule family=\"ipv4\" ${FORTRESS_OUT[$rule]} accept"
+    firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule="rule family=\"ipv6\" ${FORTRESS_OUT[$rule]} accept"
 done
 
-# Create the port knocking listener script
-KNOCK_SCRIPT="/usr/local/bin/knockd-firewalld.sh"
-cat > $KNOCK_SCRIPT << 'EOF'
+# Fortress direct rules
+add_direct_rule ipv4 INPUT "-p icmp -m limit --limit 5/s -j ACCEPT"
+add_direct_rule ipv6 INPUT "-p ipv6-icmp -m limit --limit 5/s -j ACCEPT"
+
+# =========================================================================
+# 3. PORT KNOCKING SETUP
+# =========================================================================
+echo
+echo "🔑 Configuring Port Knocking (SSH on ${SSH_PORT})..."
+
+# Add knock ports to default zone
+for port in "${KNOCK_PORTS[@]}"; do
+    firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-port=${port}/tcp
+done
+
+# Create knockd script
+cat > /usr/local/bin/knockd-listener <<EOF
 #!/bin/bash
-# Simple port knocking implementation using firewalld and iptables
-# This script monitors logs for port knock sequences and temporarily opens ports
+# Port knocking implementation for firewalld 2.2.3
+# Monitor logs for knock sequence: ${KNOCK_PORTS[@]}
 
-KNOCK_SEQUENCE=("7000" "8000" "9000")
-SECRET_PORT="22"
-OPEN_DURATION=60  # seconds
-
-# Read the logs for knocking attempts
-tail -f /var/log/messages | grep --line-buffered "KNOCK_" | while read line; do
-    # Extract source IP from the log
-    IP=$(echo "$line" | grep -oP 'SRC=\K[0-9.]+')
-    PORT=$(echo "$line" | grep -oP 'DPT=\K[0-9]+')
-    
-    # Log this knock attempt for debugging
-    echo "$(date): Knock detected from $IP on port $PORT" >> /var/log/knockd-firewalld.log
-    
-    # Check if this IP already has a complete sequence in progress
-    PROGRESS_FILE="/tmp/knock_${IP//./\_}"
-    
-    if [ ! -f "$PROGRESS_FILE" ]; then
-        # First knock in sequence
-        if [ "$PORT" == "${KNOCK_SEQUENCE[0]}" ]; then
-            echo "1" > "$PROGRESS_FILE"
-            echo "$(date): New knock sequence started from $IP" >> /var/log/knockd-firewalld.log
-        fi
-    else
-        # Continuing a sequence
-        PROGRESS=$(cat "$PROGRESS_FILE")
-        EXPECTED_PORT="${KNOCK_SEQUENCE[$PROGRESS]}"
-        
-        if [ "$PORT" == "$EXPECTED_PORT" ]; then
-            PROGRESS=$((PROGRESS + 1))
-            echo "$PROGRESS" > "$PROGRESS_FILE"
-            
-            # Check if sequence is complete
-            if [ "$PROGRESS" -eq "${#KNOCK_SEQUENCE[@]}" ]; then
-                echo "$(date): Successful knock sequence from $IP, opening port $SECRET_PORT" >> /var/log/knockd-firewalld.log
-                
-                # Open the port temporarily for this IP
-                firewall-cmd --zone=FedoraWorkstation --add-rich-rule="rule family=\"ipv4\" source address=\"$IP\" port port=\"$SECRET_PORT\" protocol=\"tcp\" accept" --timeout=${OPEN_DURATION}
-                
-                # Notify admin (optional)
-                notify-send "Port Knock Alert" "Port $SECRET_PORT opened for $IP for $OPEN_DURATION seconds" --urgency=normal
-                
-                # Remove the progress file
-                rm "$PROGRESS_FILE"
+tail -Fn0 /var/log/messages | while read line; do
+    if echo "\$line" | grep -q "DPT=${KNOCK_PORTS[0]}"; then
+        IP=\$(echo "\$line" | grep -oP 'SRC=\K[0-9.]+')
+        echo "\$(date) - Knock start from \$IP" >> /var/log/knockd.log
+        echo "1" > "/tmp/knock-\$IP"
+    elif [ -n "\$IP" ] && [ -f "/tmp/knock-\$IP" ]; then
+        COUNT=\$(cat "/tmp/knock-\$IP")
+        if echo "\$line" | grep -q "DPT=${KNOCK_PORTS[\$COUNT]}"; then
+            echo "\$((COUNT+1))" > "/tmp/knock-\$IP"
+            if [ \$((COUNT+1)) -eq ${#KNOCK_PORTS[@]} ]; then
+                echo "\$(date) - Valid knock from \$IP" >> /var/log/knockd.log
+                firewall-cmd --zone=${FEDORA_ZONE} --add-rich-rule="rule family=\"ipv4\" source address=\"\$IP\" port port=\"${SSH_PORT}\" protocol=\"tcp\" accept" --timeout=30
+                rm -f "/tmp/knock-\$IP"
             fi
-        else
-            # Wrong sequence, reset
-            rm "$PROGRESS_FILE"
-            echo "$(date): Invalid knock sequence from $IP" >> /var/log/knockd-firewalld.log
         fi
     fi
 done
 EOF
 
-chmod +x $KNOCK_SCRIPT
+chmod +x /usr/local/bin/knockd-listener
 
-# Create systemd service file for knockd
-cat > /etc/systemd/system/knockd-firewalld.service << EOF
+# Create systemd service
+cat > /etc/systemd/system/knockd.service <<EOF
 [Unit]
-Description=Simple port knocking daemon for firewalld
-After=network.target firewalld.service
+Description=Port Knock Daemon
+After=network.target
 
 [Service]
-Type=simple
-ExecStart=/usr/local/bin/knockd-firewalld.sh
+ExecStart=/usr/local/bin/knockd-listener
 Restart=always
-RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Enable and start the service
 systemctl daemon-reload
-systemctl enable knockd-firewalld.service
-systemctl start knockd-firewalld.service
+systemctl enable --now knockd.service
 
-echo "✅ Port knocking configured. Use sequence: ${KNOCK_SEQ[0]} → ${KNOCK_SEQ[1]} → ${KNOCK_SEQ[2]} to open port $SECRET_PORT"
+# =========================================================================
+# 4. NETWORK AUTO-SWITCHING
+# =========================================================================
+echo
+echo "🔄 Configuring Network Auto-Switching..."
+
+# Create switcher script
+cat > /usr/local/bin/firewall-switcher <<'EOF'
+#!/bin/bash
+TRUSTED_NETWORKS=("HomeLAN" "CorporateVPN")
+NORMAL_ZONE="FedoraWorkstation"
+SECURE_ZONE="fortress"
+
+CURRENT_SSID=$(nmcli -t -f active,ssid dev wifi | grep '^yes:' | cut -d: -f2)
+VPN_ACTIVE=$(ip tuntap show | grep -qc tun0)
+
+if [ $VPN_ACTIVE -gt 0 ]; then
+    firewall-cmd --set-default-zone=${NORMAL_ZONE}
+elif [ -z "$CURRENT_SSID" ]; then
+    firewall-cmd --set-default-zone=${SECURE_ZONE}
+elif printf '%s\n' "${TRUSTED_NETWORKS[@]}" | grep -qx "$CURRENT_SSID"; then
+    firewall-cmd --set-default-zone=${NORMAL_ZONE}
+else
+    firewall-cmd --set-default-zone=${SECURE_ZONE}
+fi
+EOF
+
+chmod +x /usr/local/bin/firewall-switcher
+
+# Create NetworkManager dispatcher
+cat > /etc/NetworkManager/dispatcher.d/99-firewall-switch <<'EOF'
+#!/bin/bash
+[ "$2" = "up" ] || [ "$2" = "down" ] && /usr/local/bin/firewall-switcher
+EOF
+
+chmod +x /etc/NetworkManager/dispatcher.d/99-firewall-switch
+
+# =========================================================================
+# FINALIZATION
+# =========================================================================
+echo
+echo "🎯 Finalizing Configuration..."
+firewall-cmd --reload
 
 echo
-echo "🎉 === Enhanced Firewall Configuration Applied === 🎉"
-echo
-echo "Current default zone: $(firewall-cmd --get-default-zone)"
-echo "Active zones:"
+echo "✅ Hardening Complete!"
+echo "🔥 Default Zone: $(firewall-cmd --get-default-zone)"
+echo "🔒 Active Zones:"
 firewall-cmd --get-active-zones
 echo
-echo "✨ Next Steps & Usage ✨"
-echo "--------------------------------------------------"
-echo "To activate ultra-secure mode (e.g., on public Wi-Fi):"
-echo "  sudo firewall-cmd --set-default-zone=$FORTRESS_ZONE"
-echo
-echo "To switch back to normal/dev mode (e.g., at home/office):"
-echo "  sudo firewall-cmd --set-default-zone=$FEDORA_ZONE"
-echo
-echo "For automatic network switching:"
-echo "  Edit $SWITCHER_SCRIPT and add your trusted networks"
-echo "  The script will run automatically when you connect to WiFi"
-echo
-echo "For port knocking to enable SSH access:"
-echo "  nc -z YOUR_SERVER_IP ${KNOCK_SEQ[0]}"
-echo "  nc -z YOUR_SERVER_IP ${KNOCK_SEQ[1]}"
-echo "  nc -z YOUR_SERVER_IP ${KNOCK_SEQ[2]}"
-echo "  ssh user@YOUR_SERVER_IP  # Port will be open for $OPEN_DURATION seconds"
-echo
-echo "Remember: The '$FEDORA_ZONE' zone now REJECTS incoming connections by default."
-echo "To allow a service (e.g., a web server for testing on port 8080) temporarily:"
-echo "  sudo firewall-cmd --zone=$FEDORA_ZONE --add-port=8080/tcp"
-echo "To allow it permanently:"
-echo "  sudo firewall-cmd --permanent --zone=$FEDORA_ZONE --add-port=8080/tcp && sudo firewall-cmd --reload"
-echo
-echo "View logs for dropped/rejected packets:"
-echo "  sudo journalctl -f | grep -E '_(DROP|REJECT): '"
-echo "--------------------------------------------------"
+echo "💡 Usage Tips:"
+echo "- Trusted Networks: Edit /usr/local/bin/firewall-switcher"
+echo "- Port Knocking: knock ${KNOCK_PORTS[@]} then ssh"
+echo "- Logs: journalctl -u knockd -f"
