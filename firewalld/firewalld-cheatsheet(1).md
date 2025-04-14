@@ -221,3 +221,16 @@ sudo firewall-cmd --reload
 5. **Test your firewall**: Use nmap to verify your rules are working as expected.
 6. **Always reload**: Remember that `--permanent` options require a reload to take effect.
 7. **Monitor logs**: Check firewall logs regularly for unusual activity.
+
+# Temporarily open a port (4 hour timeout)
+```sudo firewall-cmd --zone=FedoraWorkstation --add-port=8080/tcp --timeout=14400```
+
+# View all active rules
+```
+sudo firewall-cmd --list-all-zones
+```
+
+# Monitor firewall logs
+```
+sudo journalctl -u firewalld -f | grep -E 'DROP|REJECT'
+```

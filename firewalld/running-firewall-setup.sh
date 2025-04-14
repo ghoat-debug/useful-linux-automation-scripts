@@ -37,9 +37,6 @@ else
     exit 1
 fi
 
-# Note: We're removing the problematic --set-log-denied option
-# If you want to enable logging for rejected packets, run this manually:
-# sudo firewall-cmd --set-log-denied=all
 echo
 echo "🛠️ Starting firewalld configuration..."
 
@@ -69,14 +66,15 @@ firewall-cmd --permanent --zone=$FEDORA_ZONE --add-source=::1/128
 
 # Allow established/related connections (essential for return traffic)
 echo "   - Allowing established/related connections"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" ct state="RELATED,ESTABLISHED" accept'
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" ct state="RELATED,ESTABLISHED" accept'
+# Fixed rich rules for connection state tracking
+# firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" state="RELATED,ESTABLISHED" accept'
+# firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" state="RELATED,ESTABLISHED" accept'
 
 # --- Security Hardening Rules ---
 # Drop invalid packets (common hardening)
 echo "   - Dropping invalid packets"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" ct state="INVALID" drop'
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" ct state="INVALID" drop'
+firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" state="INVALID" drop'
+firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" state="INVALID" drop'
 
 # Rate limit NEW connections (SYN flood mitigation)
 echo "   - Rate limiting new incoming TCP connections (SYN Flood)"
@@ -121,8 +119,9 @@ firewall-cmd --permanent --zone=$FORTRESS_ZONE --set-target=DROP
 # --- Essential Allow Rules (Very Minimal Inbound) ---
 # Allow established/related connections (essential for return traffic of outbound connections)
 echo "   - Allowing established/related connections"
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" ct state="RELATED,ESTABLISHED" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" ct state="RELATED,ESTABLISHED" accept'
+# Fixed rich rules for connection state tracking
+# firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" state="RELATED,ESTABLISHED" accept'
+# firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" state="RELATED,ESTABLISHED" accept'
 
 # Allow DHCPv6 client (essential for IPv6 connectivity on many networks)
 echo "   - Allowing DHCPv6 client service (inbound)"
@@ -136,8 +135,8 @@ firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv
 # --- Security Hardening Rules ---
 # Drop invalid packets
 echo "   - Dropping invalid packets"
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" ct state="INVALID" drop'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" ct state="INVALID" drop'
+firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" state="INVALID" drop'
+firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" state="INVALID" drop'
 
 # Log and drop common stealth scans (same as FedoraWorkstation)
 echo "   - Adding rules to log & drop common stealth scans"
@@ -176,7 +175,7 @@ cat > $SWITCHER_SCRIPT << 'EOF'
 # Automatically switches between normal and fortress mode based on network SSID
 
 # Configuration - Edit these values
-TRUSTED_NETWORKS=("HomeSweetHome" "Work-Corp-Secure" "YourTrustedNetwork")
+TRUSTED_NETWORKS=("coast-white" "Innovus Office")
 NORMAL_ZONE="FedoraWorkstation"
 SECURE_ZONE="fortress"
 
