@@ -94,18 +94,23 @@ echo "🏰 Creating ${FORTRESS_ZONE} zone..."
 firewall-cmd --permanent --new-zone=${FORTRESS_ZONE} 2>/dev/null || true
 firewall-cmd --permanent --zone=${FORTRESS_ZONE} --set-target=DROP
 
-# Essential outbound rules
+# Essential outbound rules using direct configuration
 declare -A FORTRESS_OUT=(
-    ["DNS_TCP"]='port port="53" protocol="tcp" direction="out"'
-    ["DNS_UDP"]='port port="53" protocol="udp" direction="out"'
-    ["HTTP"]='port port="80" protocol="tcp" direction="out"'
-    ["HTTPS"]='port port="443" protocol="tcp" direction="out"'
+    ["DNS_TCP"]='-p tcp --dport 53'
+    ["DNS_UDP"]='-p udp --dport 53'
+    ["HTTP"]='-p tcp --dport 80'
+    ["HTTPS"]='-p tcp --dport 443'
 )
 
 for rule in "${!FORTRESS_OUT[@]}"; do
-    firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule="rule family=\"ipv4\" ${FORTRESS_OUT[$rule]} accept"
-    firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule="rule family=\"ipv6\" ${FORTRESS_OUT[$rule]} accept"
+    # IPv4 rules
+    firewall-cmd --permanent --direct --add-rule ipv4 filter OUTPUT 0 ${FORTRESS_OUT[$rule]} -j ACCEPT
+    # IPv6 rules
+    firewall-cmd --permanent --direct --add-rule ipv6 filter OUTPUT 0 ${FORTRESS_OUT[$rule]} -j ACCEPT
 done
+
+# Allow DHCPv6 client (essential for IPv6 connectivity)
+firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-service=dhcpv6-client
 
 # Fortress direct rules
 add_direct_rule ipv4 INPUT "-p icmp -m limit --limit 5/s -j ACCEPT"
@@ -122,26 +127,35 @@ for port in "${KNOCK_PORTS[@]}"; do
     firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-port=${port}/tcp
 done
 
-# Create knockd script
+# Create knockd script with explicit sequence checking
 cat > /usr/local/bin/knockd-listener <<EOF
 #!/bin/bash
 # Port knocking implementation for firewalld 2.2.3
-# Monitor logs for knock sequence: ${KNOCK_PORTS[@]}
+# Sequence: ${KNOCK_PORTS[0]} → ${KNOCK_PORTS[1]} → ${KNOCK_PORTS[2]}
 
 tail -Fn0 /var/log/messages | while read line; do
+    # First knock detection
     if echo "\$line" | grep -q "DPT=${KNOCK_PORTS[0]}"; then
         IP=\$(echo "\$line" | grep -oP 'SRC=\K[0-9.]+')
-        echo "\$(date) - Knock start from \$IP" >> /var/log/knockd.log
+        echo "\$(date) - Initial knock from \$IP" >> /var/log/knockd.log
         echo "1" > "/tmp/knock-\$IP"
+    
+    # Subsequent knocks
     elif [ -n "\$IP" ] && [ -f "/tmp/knock-\$IP" ]; then
         COUNT=\$(cat "/tmp/knock-\$IP")
-        if echo "\$line" | grep -q "DPT=${KNOCK_PORTS[\$COUNT]}"; then
-            echo "\$((COUNT+1))" > "/tmp/knock-\$IP"
-            if [ \$((COUNT+1)) -eq ${#KNOCK_PORTS[@]} ]; then
-                echo "\$(date) - Valid knock from \$IP" >> /var/log/knockd.log
-                firewall-cmd --zone=${FEDORA_ZONE} --add-rich-rule="rule family=\"ipv4\" source address=\"\$IP\" port port=\"${SSH_PORT}\" protocol=\"tcp\" accept" --timeout=30
-                rm -f "/tmp/knock-\$IP"
-            fi
+        
+        # Second knock check
+        if [ \$COUNT -eq 1 ] && echo "\$line" | grep -q "DPT=${KNOCK_PORTS[1]}"; then
+            echo "2" > "/tmp/knock-\$IP"
+        
+        # Final knock check
+        elif [ \$COUNT -eq 2 ] && echo "\$line" | grep -q "DPT=${KNOCK_PORTS[2]}"; then
+            echo "\$(date) - Valid knock sequence from \$IP" >> /var/log/knockd.log
+            firewall-cmd --zone=${FEDORA_ZONE} --add-rich-rule="rule family=ipv4 source address=\$IP port port=${SSH_PORT} protocol=tcp accept" --timeout=30
+            rm -f "/tmp/knock-\$IP"
+        else
+            # Invalid sequence or timeout
+            rm -f "/tmp/knock-\$IP"
         fi
     fi
 done
@@ -157,7 +171,8 @@ After=network.target
 
 [Service]
 ExecStart=/usr/local/bin/knockd-listener
-Restart=always
+Restart=on-failure
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
