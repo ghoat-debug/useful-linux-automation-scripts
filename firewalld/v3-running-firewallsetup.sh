@@ -22,6 +22,14 @@ fi
 
 echo "🛡️ === Starting Enhanced FirewallD Configuration ==="
 
+# Check firewalld version
+FIREWALLD_VERSION=$(firewall-cmd --version 2>/dev/null || echo "0")
+if [[ "$FIREWALLD_VERSION" < "0.7.0" ]]; then
+    echo "❌ ERROR: This script requires firewalld version 0.7.0 or higher"
+    echo "Current version: $FIREWALLD_VERSION"
+    exit 1
+fi
+
 # Backup current configuration
 BACKUP_DIR="/root/firewalld-backup-$(date +%Y%m%d-%H%M%S)"
 if mkdir -p "$BACKUP_DIR"; then
@@ -42,122 +50,62 @@ echo "🛠️ Starting firewalld configuration..."
 
 # =========================================================================
 # 1. HARDEN DEFAULT ZONE ($FEDORA_ZONE)
-#    Goal: Restrict network access to services, allow local development.
 # =========================================================================
 echo
 echo "🔧 Enhancing '$FEDORA_ZONE' zone..."
 
 # --- Set Default Behavior ---
-echo "   - Setting default target to REJECT (blocks unsolicited connections)"
+echo "   - Setting default target to REJECT"
 firewall-cmd --permanent --zone=$FEDORA_ZONE --set-target=REJECT
 
-# --- Remove Default Allowed Services (adjust as needed) ---
-echo "   - Removing default services (ssh, mdns) - Add back if needed!"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --remove-service=ssh 2>/dev/null || echo "   - Note: ssh service was not present or already removed."
-firewall-cmd --permanent --zone=$FEDORA_ZONE --remove-service=mdns 2>/dev/null || echo "   - Note: mdns service was not present or already removed."
-# Keep dhcpv6-client if it was there, or add it if needed for IPv6 connectivity
+# --- Remove Default Allowed Services ---
+echo "   - Removing default services"
+firewall-cmd --permanent --zone=$FEDORA_ZONE --remove-service=ssh 2>/dev/null || echo "   - ssh not present"
+firewall-cmd --permanent --zone=$FEDORA_ZONE --remove-service=mdns 2>/dev/null || echo "   - mdns not present"
 firewall-cmd --permanent --zone=$FEDORA_ZONE --add-service=dhcpv6-client
 
 # --- Essential Allow Rules ---
-# Allow ALL traffic originating from the local machine itself (essential for testing)
-echo "   - Allowing all loopback traffic (localhost)"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" source address="127.0.0.1/8" accept'
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" source address="::1/128" accept'
+echo "   - Allowing loopback traffic"
+firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" source address="127.0.0.1" accept'
+firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" source address="::1" accept'
 
-# Allow established/related connections (essential for return traffic)
-echo "   - Allowing established/related connections"
-# firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" state established,related accept'
-# firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" state established,related accept'
-
-# --- Security Hardening Rules ---
-# Drop invalid packets (common hardening)
+# --- Security Hardening ---
 echo "   - Dropping invalid packets"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" state invalid drop'
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" state invalid drop'
+firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
+firewall-cmd --permanent --direct --add-rule ipv6 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
 
-# Rate limit NEW connections (SYN flood mitigation)
-echo "   - Rate limiting new incoming TCP connections (SYN Flood)"
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" tcp flags="syn" limit value="15/s" accept'
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" tcp flags="syn" limit value="15/s" accept'
+echo "   - Rate limiting SYN packets"
+firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule protocol value="tcp" tcp-flags="SYN" limit value="15/s" accept'
+firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv6" protocol value="tcp" tcp-flags="SYN" limit value="15/s" accept'
 
-# Log and drop common stealth scans
-echo "   - Adding rules to log & drop common stealth scans (Null, FIN, Xmas)"
-# Null Scan (No flags set)
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" tcp flags="fin,syn,rst,psh,ack,urg" flags-mask="fin,syn,rst,psh,ack,urg" log prefix="NULL_SCAN_DROP: " level="warning" limit value="5/m" drop'
-# FIN Scan (Only FIN flag set)
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" tcp flags="fin" flags-mask="fin,syn,rst,psh,ack,urg" log prefix="FIN_SCAN_DROP: " level="warning" limit value="5/m" drop'
-# Xmas Scan (FIN, PSH, URG set)
-firewall-cmd --permanent --zone=$FEDORA_ZONE --add-rich-rule='rule family="ipv4" tcp flags="fin,psh,urg" flags-mask="fin,psh,urg" log prefix="XMAS_SCAN_DROP: " level="warning" limit value="5/m" drop'
-
-# Block incoming packets claiming to be from loopback but aren't (Spoofing)
-echo "   - Blocking spoofed loopback packets"
-for iface in $(ls /sys/class/net/ | grep -v lo); do
-    firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -i $iface -s 127.0.0.0/8 -j DROP
-    firewall-cmd --permanent --direct --add-rule ipv6 filter INPUT 0 -i $iface -s ::1/128 -j DROP
-done
+echo "   - Blocking spoofed loopback"
+firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 ! -i lo -s 127.0.0.0/8 -j DROP
+firewall-cmd --permanent --direct --add-rule ipv6 filter INPUT 0 ! -i lo -s ::1/128 -j DROP
 
 echo "✅ Hardening for '$FEDORA_ZONE' configured."
 
 # =========================================================================
-# 2. CREATE FORTRESS ZONE ($FORTRESS_ZONE)
-#    Goal: Absolute zero trust for public/untrusted networks. Default deny all.
+# 2. FORTRESS ZONE ($FORTRESS_ZONE)
 # =========================================================================
 echo
-echo "🏰 Creating '$FORTRESS_ZONE' zone (Zero Trust)..."
+echo "🏰 Creating '$FORTRESS_ZONE' zone..."
 
-# Create the new zone if it doesn't exist
-if ! firewall-cmd --permanent --get-zones | grep -q $FORTRESS_ZONE; then
-    echo "   - Creating new zone '$FORTRESS_ZONE'"
-    firewall-cmd --permanent --new-zone=$FORTRESS_ZONE
-else
-    echo "   - Zone '$FORTRESS_ZONE' already exists, configuring..."
-fi
-
-# Set target to DROP (silently ignore unsolicited incoming traffic)
-echo "   - Setting default target to DROP"
+firewall-cmd --permanent --new-zone=$FORTRESS_ZONE 2>/dev/null || echo "   - Zone exists, reconfiguring"
 firewall-cmd --permanent --zone=$FORTRESS_ZONE --set-target=DROP
 
-# --- Essential Allow Rules (Very Minimal Inbound) ---
-# Allow established/related connections (essential for return traffic of outbound connections)
-echo "   - Allowing established/related connections"
-# firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" state established,related accept'
-# firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" state established,related accept'
-
-# Allow DHCPv6 client (essential for IPv6 connectivity on many networks)
-echo "   - Allowing DHCPv6 client service (inbound)"
+# Essential allows
 firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-service=dhcpv6-client
 
-# Rate limit incoming ICMP (allow basic pings but prevent floods)
-echo "   - Rate limiting incoming ICMP/ICMPv6"
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule protocol value="icmp" limit value="5/s" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" protocol value="ipv6-icmp" limit value="5/s" accept'
+# Security rules
+firewall-cmd --permanent --direct --add-rule ipv4 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
+firewall-cmd --permanent --direct --add-rule ipv6 filter INPUT 0 -m conntrack --ctstate INVALID -j DROP
 
-# --- Security Hardening Rules ---
-# Drop invalid packets
-echo "   - Dropping invalid packets"
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" state invalid drop'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" state invalid drop'
-
-# Log and drop common stealth scans (same as FedoraWorkstation)
-echo "   - Adding rules to log & drop common stealth scans"
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" tcp flags="fin,syn,rst,psh,ack,urg" flags-mask="fin,syn,rst,psh,ack,urg" log prefix="FORTRESS_NULL_SCAN_DROP: " level="warning" limit value="5/m" drop'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" tcp flags="fin" flags-mask="fin,syn,rst,psh,ack,urg" log prefix="FORTRESS_FIN_SCAN_DROP: " level="warning" limit value="5/m" drop'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" tcp flags="fin,psh,urg" flags-mask="fin,psh,urg" log prefix="FORTRESS_XMAS_SCAN_DROP: " level="warning" limit value="5/m" drop'
-
-# --- Allow outbound services directly in the zone ---
-echo "   - Configuring outbound traffic rules..."
-
-# Allow essential outbound services
-echo "      - Allowing outbound DNS (tcp/udp 53), HTTP (tcp 80), HTTPS (tcp 443)"
+# Outbound rules
+echo "   - Configuring minimal outbound access"
 firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="53" protocol="tcp" direction="out" accept'
 firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="53" protocol="udp" direction="out" accept'
 firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="80" protocol="tcp" direction="out" accept'
 firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv4" port port="443" protocol="tcp" direction="out" accept'
-
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" port port="53" protocol="tcp" direction="out" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" port port="53" protocol="udp" direction="out" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" port port="80" protocol="tcp" direction="out" accept'
-firewall-cmd --permanent --zone=$FORTRESS_ZONE --add-rich-rule='rule family="ipv6" port port="443" protocol="tcp" direction="out" accept'
 
 # Special Docker/Pihole Integration for DNS
 if command -v docker &>/dev/null; then
