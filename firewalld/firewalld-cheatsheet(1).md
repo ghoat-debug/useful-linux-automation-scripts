@@ -1,203 +1,223 @@
-# FirewallD Cheatsheet for DevSecOps
+# 🔥 FirewallD Cheatsheet for DevSecOps on Fedora 41
 
-## 🔍 Basic Commands
+## 🧰 BASIC COMMANDS
+
+### Get Current Status
+```bash
+# Check if firewalld is running
+sudo systemctl status firewalld
+
+# View current default zone
+sudo firewall-cmd --get-default-zone
+
+# List all active zones with their interfaces
+sudo firewall-cmd --get-active-zones
+
+# Show everything allowed in a zone
+sudo firewall-cmd --zone=FedoraWorkstation --list-all
+
+# List all available zones
+sudo firewall-cmd --get-zones
+```
 
 ### Zone Management
 ```bash
-# List all available zones
-firewall-cmd --get-zones
+# Change default zone
+sudo firewall-cmd --set-default-zone=fortress
 
-# Get default zone
-firewall-cmd --get-default-zone
+# Change which zone an interface uses
+sudo firewall-cmd --zone=FedoraWorkstation --change-interface=wlo1
 
-# Set default zone
-firewall-cmd --set-default-zone=<zone-name>
-
-# Get active zones
-firewall-cmd --get-active-zones
-
-# Get details of a specific zone
-firewall-cmd --zone=<zone-name> --list-all
+# Create new zone (permanent)
+sudo firewall-cmd --permanent --new-zone=customzone
+sudo firewall-cmd --reload
 ```
 
-### Service Management
+### Rule Application: Temporary vs Permanent
 ```bash
-# List all predefined services
-firewall-cmd --get-services
+# Add temporary rule (gone after reload/reboot)
+sudo firewall-cmd --zone=FedoraWorkstation --add-port=8080/tcp
 
-# Allow a service in the default zone
-firewall-cmd --permanent --add-service=<service-name>
+# Add permanent rule (persists after reload/reboot)
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-port=8080/tcp
+sudo firewall-cmd --reload  # Apply permanent changes
 
-# Remove a service from the default zone
-firewall-cmd --permanent --remove-service=<service-name>
-
-# Check if a service is allowed
-firewall-cmd --query-service=<service-name>
+# Remove a rule
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --remove-port=8080/tcp
+sudo firewall-cmd --reload
 ```
 
-### Port Management
+## 👩‍💻 DEVSECOPS COMMON USE CASES
+
+### Allow Local Development Services
 ```bash
-# Open a port in the default zone
-firewall-cmd --permanent --add-port=<port-number>/<protocol>
+# Allow web development ports temporarily
+sudo firewall-cmd --zone=FedoraWorkstation --add-port=3000/tcp  # React
+sudo firewall-cmd --zone=FedoraWorkstation --add-port=8080/tcp  # Generic web dev
+sudo firewall-cmd --zone=FedoraWorkstation --add-port=27017/tcp # MongoDB
+sudo firewall-cmd --zone=FedoraWorkstation --add-port=5432/tcp  # PostgreSQL
 
-# Close a port in the default zone
-firewall-cmd --permanent --remove-port=<port-number>/<protocol>
-
-# Check if a port is open
-firewall-cmd --query-port=<port-number>/<protocol>
+# Make these available to ONLY localhost (secure dev)
+sudo firewall-cmd --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" source address="127.0.0.1/8" port port="3000" protocol="tcp" accept'
+sudo firewall-cmd --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" source address="127.0.0.1/8" port port="8080" protocol="tcp" accept'
 ```
 
-### Apply Changes
+### Docker Container Access
 ```bash
-# Reload firewall to apply changes
-firewall-cmd --reload
+# Allow incoming connections to a specific Docker container port
+sudo firewall-cmd --zone=FedoraWorkstation --add-port=8888/tcp
 
-# Runtime vs permanent rules
-# Add --permanent to make changes persist after reload/reboot
+# For actual Docker networking (Fedora already has a docker zone)
+sudo firewall-cmd --zone=docker --list-all
 ```
 
-## 🛡️ Advanced Security
-
-### Rich Rules
+### Services for Testing/Demos
 ```bash
-# Basic rich rule syntax
-firewall-cmd --permanent --add-rich-rule='<rule>'
+# Temporarily allow SSH for demo
+sudo firewall-cmd --zone=FedoraWorkstation --add-service=ssh
 
-# Example: Allow SSH only from specific IP
-firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="192.168.1.10" service name="ssh" accept'
+# Add multiple services at once
+sudo firewall-cmd --zone=FedoraWorkstation --add-service={http,https}
 
-# Example: Rate limit connections to port 80
-firewall-cmd --permanent --add-rich-rule='rule service name="http" limit value="10/m" accept'
-
-# Example: Log and drop traffic
-firewall-cmd --permanent --add-rich-rule='rule service name="http" log prefix="HTTP_DROP: " level="warning" limit value="5/m" drop'
+# Allow service for specific source IP only (demo to colleague)
+sudo firewall-cmd --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" source address="192.168.1.10" service name="ssh" accept'
 ```
 
-### Connection Tracking
+## 🔒 ADVANCED SECURITY RULES
+
+### Port Scan Detection & Prevention
 ```bash
-# Accept established connections
-firewall-cmd --permanent --add-rich-rule='rule ct state RELATED,ESTABLISHED accept'
+# Log and drop Xmas scan attempts
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" tcp flags="fin,psh,urg" flags-mask="fin,psh,urg" log prefix="XMAS_SCAN_DROP: " level="warning" limit value="5/m" drop'
+
+# Drop all port scans attempting to use the FIN flag only
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" tcp flags="fin" flags-mask="fin,syn,rst,psh,ack,urg" drop'
+```
+
+### Rate Limiting to Prevent DoS
+```bash
+# Limit incoming pings
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule protocol value="icmp" limit value="5/s" accept'
+
+# Rate limit new TCP connections (SYN packets)
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" tcp flags="syn" limit value="15/s" accept'
+```
+
+### Connection Tracking for Smart Filtering
+```bash
+# Allow established and related connections
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" ct state="RELATED,ESTABLISHED" accept'
 
 # Drop invalid packets
-firewall-cmd --permanent --add-rich-rule='rule ct state INVALID drop'
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule family="ipv4" ct state="INVALID" drop'
 ```
 
-### Port Scan Protection
+### Geolocation Blocking (requires ipset)
 ```bash
-# Block SYN-FIN scans
-firewall-cmd --permanent --add-rich-rule='rule tcp flags="SYN,FIN" drop'
-
-# Block Xmas scans
-firewall-cmd --permanent --add-rich-rule='rule tcp flags="FIN,SYN,RST,PSH,ACK,URG" tcp-flags="FIN,SYN,RST,PSH,ACK,URG" drop'
-
-# Block null scans
-firewall-cmd --permanent --add-rich-rule='rule tcp flags="FIN,SYN,RST,PSH,ACK,URG" tcp-flags="NONE" drop'
+# Block entire country ranges (example uses ipset)
+# First install ipset: sudo dnf install ipset
+sudo firewall-cmd --permanent --new-ipset=blocklist --type=hash:net --option=family=inet
+sudo firewall-cmd --permanent --ipset=blocklist --add-entry=1.2.3.0/24
+sudo firewall-cmd --permanent --zone=FedoraWorkstation --add-rich-rule='rule source ipset=blocklist drop'
+sudo firewall-cmd --reload
 ```
 
-### IPv6 Security
+## 🔍 LOGGING & DEBUGGING
+
+### View Firewall Logs
 ```bash
-# Block IPv6 router advertisements (if not needed)
-firewall-cmd --permanent --add-rich-rule='rule family="ipv6" icmp-type name="router-advertisement" drop'
+# View rejected packets in real-time
+sudo journalctl -f | grep -E '_(DROP|REJECT): '
 
-# Allow only specific IPv6 ICMP types
-firewall-cmd --permanent --add-rich-rule='rule family="ipv6" protocol value="ipv6-icmp" icmp-type name="echo-request" accept'
+# Count rejections by source IP
+sudo journalctl | grep "REJECT" | awk '{print $13}' | sort | uniq -c | sort -nr | head -10
+
+# Set log verbosity (all, unicast, broadcast, multicast, off)
+sudo firewall-cmd --set-log-denied=all
 ```
 
-## 💼 DevSecOps Specific
+### Troubleshooting Commands
+```bash
+# Test if a port is being blocked
+sudo nmap -p 8080 localhost
+
+# Check if a service is correctly configured in firewalld
+sudo firewall-cmd --info-service=http
+
+# Debug rich rules
+sudo firewall-cmd --debug=2 --direct --add-rule...
+```
+
+## 🧩 WORKING WITH CUSTOM SERVICES
+
+### Create Custom Service
+```bash
+# Create service definition for your app
+sudo firewall-cmd --permanent --new-service=myapp
+sudo firewall-cmd --permanent --service=myapp --set-description="My Custom App"
+sudo firewall-cmd --permanent --service=myapp --add-port=9000/tcp
+sudo firewall-cmd --reload
+
+# Then use it
+sudo firewall-cmd --zone=FedoraWorkstation --add-service=myapp
+```
 
 ### Docker Integration
 ```bash
-# Check if docker zone exists
-firewall-cmd --get-zones | grep docker
+# Allow traffic to Docker subnet
+sudo firewall-cmd --permanent --zone=trusted --add-source=172.17.0.0/16
 
-# Allow specific ports in docker zone
-firewall-cmd --permanent --zone=docker --add-port=<port>/<protocol>
-
-# Add interface to docker zone
-firewall-cmd --permanent --zone=docker --add-interface=<interface>
+# For docker compose with custom networks
+sudo firewall-cmd --permanent --zone=trusted --add-source=172.18.0.0/16
 ```
 
-### Local Development
+## 📊 Monitoring & Verification
+
+### Check Current Connections
 ```bash
-# Allow localhost access to all services
-firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source address="127.0.0.1" accept'
-firewall-cmd --permanent --add-rich-rule='rule family="ipv6" source address="::1" accept'
+# View active connections through the firewall
+sudo ss -tunap
 
-# Allow only localhost to access development port
-firewall-cmd --permanent --add-rich-rule='rule family="ipv4" source NOT address="127.0.0.1" port port="8080" protocol="tcp" drop'
+# Get stats on firewall activity
+sudo firewall-cmd --get-log-denied
 ```
 
-### Pentesting Setup
+### Scan Your Own Machine
 ```bash
-# Allow outgoing connections on common pentest ports
-firewall-cmd --permanent --zone=<zone> --add-rich-rule='rule port port="443" protocol="tcp" outbound accept'
-firewall-cmd --permanent --zone=<zone> --add-rich-rule='rule port port="8080" protocol="tcp" outbound accept'
+# Install nmap if not present
+sudo dnf install nmap
 
-# Forward a port for specific tools
-firewall-cmd --permanent --add-forward-port=port=<port>:proto=<protocol>:toport=<target-port>
+# Scan all ports from outside perspective
+sudo nmap -p- localhost
+
+# Check what services are actually visible
+sudo nmap -sV localhost
 ```
 
-## 🔐 Zero Trust Model
+## 🔁 AUTOMATE FIREWALL CHANGES
 
-### Network Segmentation
+### Helpful One-Liners
 ```bash
-# Allow specific interface to specific zone
-firewall-cmd --permanent --zone=<zone> --add-interface=<interface>
+# Allow a port on trusted networks/block on untrusted (use in scripts)
+[ "$(nmcli -t -f active,ssid dev wifi | grep '^yes' | cut -d: -f2)" == "HomeNetwork" ] && sudo firewall-cmd --add-port=8080/tcp || sudo firewall-cmd --remove-port=8080/tcp
 
-# Allow specific source to specific zone
-firewall-cmd --permanent --zone=<zone> --add-source=<ip-address/subnet>
+# Reset to default state
+sudo systemctl restart firewalld
 ```
 
-### Logging & Auditing
+### Restore from Backup
 ```bash
-# Enable logging for specific service
-firewall-cmd --permanent --add-rich-rule='rule service name="<service>" log prefix="<SERVICE>_ACCESS: " level="notice" limit value="3/m" accept'
-
-# Log dropped packets
-firewall-cmd --permanent --add-rich-rule='rule log prefix="DROP_PACKET: " level="warning" limit value="10/m" drop'
+# Copy backup files back
+sudo cp -a /root/firewalld-backup-YYYYMMDD-HHMMSS/* /etc/firewalld/
+sudo firewall-cmd --reload
 ```
 
-### Emergency Lockdown
-```bash
-# Switch to drop-all mode in emergency
-firewall-cmd --panic-on
+## ⚠️ SECURITY TIPS
 
-# Disable panic mode
-firewall-cmd --panic-off
-
-# Check if in panic mode
-firewall-cmd --query-panic
-```
-
-## 🔄 Best Practices
-
-1. **Always test changes** before applying permanently
-2. **Use `--timeout` option** for temporary changes
-3. **Keep backup** of your firewall configuration
-4. **Use descriptive log prefixes** for easier analysis
-5. **Implement rate limiting** to prevent DoS attacks
-6. **Use zones** to segment different networks
-7. **Apply principle of least privilege** - only open what's needed
-8. **Regularly audit** your firewall rules
-9. **Use connection tracking** for stateful filtering
-10. **Document your rule set** and reasons for each rule
-
-## 📊 Troubleshooting
-
-```bash
-# Get debug logs
-journalctl -u firewalld
-
-# Check if firewalld is running
-systemctl status firewalld
-
-# Test a rule before applying
-firewall-cmd --add-rich-rule='<rule>' --timeout=60
-
-# Backup configuration
-cp -r /etc/firewalld /etc/firewalld.bak
-
-# Restore configuration
-cp -r /etc/firewalld.bak /etc/firewalld
-systemctl restart firewalld
-```
+1. **Default-deny approach**: Start by rejecting everything, then carefully allow only what you need.
+2. **Use localhost bindings**: Bind development services to 127.0.0.1 when possible instead of 0.0.0.0.
+3. **Regular audits**: Periodically run `sudo firewall-cmd --list-all-zones` to check what's open.
+4. **Port exposures**: Consider temporary rules (`--add-port` without `--permanent`) for one-time testing.
+5. **Test your firewall**: Use nmap to verify your rules are working as expected.
+6. **Always reload**: Remember that `--permanent` options require a reload to take effect.
+7. **Monitor logs**: Check firewall logs regularly for unusual activity.
