@@ -48,42 +48,69 @@ cp -a /etc/firewalld "$BACKUP_DIR/" 2>/dev/null || echo "⚠️  Failed to copy 
 echo "✅ Backup complete: ${BACKUP_DIR}"
 
 # =========================================================================
+# 0. RESET EXISTING CONFIG (Important for clean application)
+# =========================================================================
+log_step "Resetting existing firewall configuration..."
+
+# Remove any existing custom configurations that might interfere
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --remove-source=127.0.0.1/8 2>/dev/null || true
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --remove-source=::1/128 2>/dev/null || true
+
+# Remove all rich rules from the default zone
+current_rules=$(firewall-cmd --permanent --zone=${FEDORA_ZONE} --list-rich-rules)
+if [ -n "$current_rules" ]; then
+    echo "$current_rules" | while IFS= read -r rule; do
+        [ -n "$rule" ] && firewall-cmd --permanent --zone=${FEDORA_ZONE} --remove-rich-rule="$rule"
+    done
+fi
+
+# =========================================================================
 # 1. HARDEN DEFAULT ZONE (FedoraWorkstation)
 # =========================================================================
-log_step "Configuring ${FEDORA_ZONE} zone for localhost-only access by default..."
+log_step "Configuring ${FEDORA_ZONE} zone with proper network isolation..."
 
-# Base configuration - set reject target
+# Set to REJECT - this is critical for blocking network access by default
 firewall-cmd --permanent --zone=${FEDORA_ZONE} --set-target=REJECT
 
-# Remove existing port definitions - we'll add them back with restrictions
+# Remove existing ports/services we don't need
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --remove-service=ssh 2>/dev/null || true
 for port in "${KNOCK_PORTS[@]}"; do
     firewall-cmd --permanent --zone=${FEDORA_ZONE} --remove-port=${port}/tcp 2>/dev/null || true
 done
 
-# Make sure we have dhcpv6-client for network connectivity
+# Keep essential services (DHCPv6 client for network connectivity)
 firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-service=dhcpv6-client
 
-# Ensure localhost has full access - this is critical
-firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-source=127.0.0.1/8
-firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-source=::1/128
+# Block ICMP redirects (security measure)
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-icmp-block=redirect
 
-# Add rich rules for localhost access again to be thorough
+# Enable masquerading for potential container use
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-masquerade
+
+# *** IMPORTANT: Create the proper localhost exception rules ***
+# This allows your local apps to connect to their own services
 firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv4" source address="127.0.0.1" accept'
-firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv6" source address="::1" accept'
 firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv4" source address="127.0.0.1/8" accept'
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv6" source address="::1" accept'
 firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv6" source address="::1/128" accept'
 
-# Add port knocking ports but ONLY accessible from outside (not localhost)
-# This is important for the knocking mechanism to work
-for port in "${KNOCK_PORTS[@]}"; do
-    # Allow the port for knocking but limit connection rate
-    firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule="rule family=\"ipv4\" port port=\"$port\" protocol=\"tcp\" accept limit value=\"5/m\""
-    firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule="rule family=\"ipv6\" port port=\"$port\" protocol=\"tcp\" accept limit value=\"5/m\""
-done
+# Port knocking configuration
+# Log each knock and limit rate
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule="rule family=\"ipv4\" port port=\"${KNOCK_PORTS[0]}\" protocol=\"tcp\" log prefix=\"KNOCK1: \" limit value=\"5/m\" accept"
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule="rule family=\"ipv4\" port port=\"${KNOCK_PORTS[1]}\" protocol=\"tcp\" log prefix=\"KNOCK2: \" limit value=\"5/m\" accept"
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule="rule family=\"ipv4\" port port=\"${KNOCK_PORTS[2]}\" protocol=\"tcp\" log prefix=\"KNOCK3: \" limit value=\"5/m\" accept"
+
+# Block common service ports by default to ensure they're not accessible from the network
+# These are examples - add any ports you commonly use for services
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv4" port port="3000" protocol="tcp" reject'
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv4" port port="5000" protocol="tcp" reject'
+firewall-cmd --permanent --zone=${FEDORA_ZONE} --add-rich-rule='rule family="ipv4" port port="8080" protocol="tcp" reject'
 
 # Direct rules for advanced protection
 add_direct_rule ipv4 INPUT "-m conntrack --ctstate INVALID -j DROP"
 add_direct_rule ipv6 INPUT "-m conntrack --ctstate INVALID -j DROP"
+
+# Block spoofed local traffic from non-loopback interfaces
 add_direct_rule ipv4 INPUT "! -i lo -s 127.0.0.0/8 -j DROP"
 add_direct_rule ipv6 INPUT "! -i lo -s ::1/128 -j DROP"
 
@@ -91,7 +118,7 @@ add_direct_rule ipv6 INPUT "! -i lo -s ::1/128 -j DROP"
 add_direct_rule ipv4 INPUT "-p tcp --syn -m limit --limit 15/s -j ACCEPT"
 add_direct_rule ipv6 INPUT "-p tcp --syn -m limit --limit 15/s -j ACCEPT"
 
-# Block port scans - enable this if you want aggressive blocking of port scanners
+# Block port scans
 add_direct_rule ipv4 INPUT "-m recent --name portscan --rcheck --seconds 86400 -j DROP"
 add_direct_rule ipv4 INPUT "-m recent --name portscan --remove"
 add_direct_rule ipv4 INPUT "-p tcp -m tcp --tcp-flags FIN,SYN,RST,ACK RST -m limit --limit 1/s -j ACCEPT"
@@ -106,7 +133,7 @@ log_step "Creating ${FORTRESS_ZONE} zone for untrusted networks..."
 firewall-cmd --permanent --new-zone=${FORTRESS_ZONE} 2>/dev/null || true
 firewall-cmd --permanent --zone=${FORTRESS_ZONE} --set-target=DROP
 
-# Essential outbound rules 
+# Essential outbound rules - only allow DNS, HTTP, and HTTPS
 firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule='rule family="ipv4" port port="53" protocol="tcp" accept'
 firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule='rule family="ipv4" port port="53" protocol="udp" accept'
 firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule='rule family="ipv4" port port="80" protocol="tcp" accept'
@@ -121,9 +148,7 @@ firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-rich-rule='rule family="i
 # Allow DHCPv6 client (essential for IPv6 connectivity)
 firewall-cmd --permanent --zone=${FORTRESS_ZONE} --add-service=dhcpv6-client
 
-# Allow limited ICMP
-add_direct_rule ipv4 INPUT "-p icmp -m limit --limit 5/s -j ACCEPT"
-add_direct_rule ipv6 INPUT "-p ipv6-icmp -m limit --limit 5/s -j ACCEPT"
+# Explicitly deny all other traffic
 
 # =========================================================================
 # 3. IMPROVED PORT KNOCKING SETUP
@@ -200,7 +225,7 @@ tcpdump -i any -n "tcp and ($(for port in "${KNOCK_SEQUENCE[@]}"; do echo -n "po
             if [[ $NEXT_POS -ge ${#KNOCK_SEQUENCE[@]} ]]; then
                 echo "$(date) - Successful knock sequence from $SRC_IP" >> "$LOG_FILE"
                 
-                # Open the SSH port with timeout
+                # Open the SSH port temporarily for this specific IP
                 firewall-cmd --zone=FedoraWorkstation --add-rich-rule="rule family=ipv4 source address=$SRC_IP port port=$SSH_PORT protocol=tcp accept" --timeout=$OPEN_DURATION
                 
                 # Reset the sequence
@@ -252,7 +277,7 @@ cat > /usr/local/bin/firewall-switcher <<'EOF'
 # Automatically switches between firewall zones based on network environment
 
 # Configuration
-TRUSTED_NETWORKS=("Innovus Office" "Wifi" "coast-white" )  # Add your trusted network SSIDs here
+TRUSTED_NETWORKS=("Innovus Office" "Wifi" "coast-white")  # Add your trusted network SSIDs here
 NORMAL_ZONE="FedoraWorkstation"
 SECURE_ZONE="fortress"
 LOG_FILE="/var/log/firewall-switcher.log"
@@ -265,6 +290,9 @@ log_message() {
 # Ensure log file exists
 touch "$LOG_FILE"
 chmod 640 "$LOG_FILE"
+
+# Get the main network interface
+MAIN_INTERFACE=$(ip -o -4 route show to default | awk '{print $5}' | head -n1)
 
 # Detect current network environment
 CURRENT_SSID=$(nmcli -t -f active,ssid dev wifi | grep '^yes:' | cut -d: -f2)
@@ -302,6 +330,20 @@ fi
 # Only switch if needed
 if [ "$CURRENT_ZONE" != "$TARGET_ZONE" ]; then
     log_message "Switching from $CURRENT_ZONE to $TARGET_ZONE ($REASON)"
+    
+    # Handle interface assignments correctly
+    if [ -n "$MAIN_INTERFACE" ]; then
+        # Remove interface from current assignment
+        current_zone=$(firewall-cmd --get-zone-of-interface="$MAIN_INTERFACE" 2>/dev/null)
+        if [ -n "$current_zone" ]; then
+            firewall-cmd --zone="$current_zone" --remove-interface="$MAIN_INTERFACE"
+        fi
+        
+        # Add interface to target zone
+        firewall-cmd --zone="$TARGET_ZONE" --add-interface="$MAIN_INTERFACE"
+    fi
+    
+    # Set default zone
     firewall-cmd --set-default-zone=${TARGET_ZONE}
     
     # Notify user if possible
@@ -332,6 +374,68 @@ chmod +x /etc/NetworkManager/dispatcher.d/99-firewall-switch
 /usr/local/bin/firewall-switcher
 
 # =========================================================================
+# 5. CREATE A TRUSTED ZONE
+# =========================================================================
+log_step "Configuring trusted zone..."
+
+# Setup trusted zone if needed (for when you explicitly want network access)
+firewall-cmd --permanent --zone=trusted --set-target=ACCEPT
+firewall-cmd --permanent --zone=trusted --add-service=ssh
+firewall-cmd --permanent --zone=trusted --add-service=dhcpv6-client
+
+# =========================================================================
+# 6. SERVICE PORT ENABLER UTILITY
+# =========================================================================
+log_step "Creating service port enabler utility..."
+
+# Create a utility script to easily enable/disable ports for services
+cat > /usr/local/bin/service-port <<'EOF'
+#!/bin/bash
+# Service Port Enabler/Disabler Utility
+# Usage: service-port [enable|disable] PORT PROTOCOL [SOURCE]
+
+ACTION=$1
+PORT=$2
+PROTO=$3
+SOURCE=$4
+ZONE="FedoraWorkstation"
+
+if [ -z "$ACTION" ] || [ -z "$PORT" ] || [ -z "$PROTO" ]; then
+    echo "Usage: service-port [enable|disable] PORT PROTOCOL [SOURCE]"
+    echo "Example: service-port enable 8080 tcp"
+    echo "Example: service-port enable 8080 tcp 192.168.1.5"
+    exit 1
+fi
+
+if [ "$ACTION" = "enable" ]; then
+    if [ -n "$SOURCE" ]; then
+        # Enable port only for specific source IP
+        firewall-cmd --zone=$ZONE --add-rich-rule="rule family=\"ipv4\" source address=\"$SOURCE\" port port=\"$PORT\" protocol=\"$PROTO\" accept"
+        echo "Enabled port $PORT/$PROTO for source $SOURCE in zone $ZONE"
+    else
+        # Enable port for all clients
+        firewall-cmd --zone=$ZONE --add-port=$PORT/$PROTO
+        echo "Enabled port $PORT/$PROTO for all clients in zone $ZONE"
+    fi
+elif [ "$ACTION" = "disable" ]; then
+    if [ -n "$SOURCE" ]; then
+        # Remove specific source rule
+        firewall-cmd --zone=$ZONE --remove-rich-rule="rule family=\"ipv4\" source address=\"$SOURCE\" port port=\"$PORT\" protocol=\"$PROTO\" accept"
+        echo "Disabled port $PORT/$PROTO for source $SOURCE in zone $ZONE"
+    else
+        # Disable port for all
+        firewall-cmd --zone=$ZONE --remove-port=$PORT/$PROTO
+        echo "Disabled port $PORT/$PROTO for all clients in zone $ZONE"
+    fi
+else
+    echo "Invalid action: $ACTION. Use enable or disable."
+    exit 1
+fi
+EOF
+
+chmod +x /usr/local/bin/service-port
+
+# =========================================================================
 # FINALIZATION
 # =========================================================================
 log_step "Finalizing Configuration..."
@@ -350,8 +454,19 @@ firewall-cmd --get-active-zones
 echo
 echo "💡 Usage Tips:"
 echo "- Local services are now restricted to localhost access by default"
+echo "- To allow a service port: service-port enable PORT PROTOCOL [SOURCE_IP]"
+echo "- To disable a service port: service-port disable PORT PROTOCOL [SOURCE_IP]"
 echo "- Trusted Networks: Edit TRUSTED_NETWORKS in /usr/local/bin/firewall-switcher"
 echo "- Port Knocking: Use the sequence ${KNOCK_PORTS[*]} to temporarily open SSH"
 echo "- Monitor logs: tail -f /var/log/knockd.log"
 echo
 echo "🔄 To revert to backup: cp -a ${BACKUP_DIR}/* /etc/firewalld/ && firewall-cmd --reload"
+
+# Enable port 8000 for all network clients
+#sudo service-port enable 8000 tcp
+
+# Enable port 8000 for specific IP only
+#sudo service-port enable 8000 tcp 192.168.1.5
+
+# Disable when done
+#sudo service-port disable 8000 tcp
