@@ -1,0 +1,38 @@
+# \U0001f9e0 <type>(scope): short summary
+#
+# Type (choose one):
+#   feat       \u2013 \U0001f527 new tool, module, or feature
+#   fix        \u2013 \U0001f41b bug or issue fixed
+#   docs       \u2013 \U0001f4d8 README, inline docs, or comments
+#   style      \u2013 \U0001f3a8 formatting, spacing, casing (no logic changes)
+#   refactor   \u2013 \u267b\ufe0f code cleanup or restructuring (no feature change)
+#   test       \u2013 \u2705 unit, integration, fuzzing, or regression tests
+#   chore      \u2013 \U0001f501 maintenance, deps, configs, meta
+#   perf       \u2013 \u26a1 speed, efficiency, reduced resource use
+#   ci         \u2013 \U0001f916 CI/CD configs, pipelines
+#   build      \u2013 \U0001f3d7\ufe0f build scripts, Dockerfiles, compile stuff
+#   sec        \u2013 \U0001f510 security fix, hardening, validation, CVE response
+#
+# Scope (optional): area or context (e.g., cli, api, jwt, netsec, parser, etc.)
+#
+# Example:
+#   feat(cli): add payload encoding module
+#   fix(netsec): prevent SSRF through DNS rebinding
+#   sec(parser): patch unsanitized input injection
+#   chore: update shellcheck ruleset
+#
+# --------------------
+# Body (optional, supports markdown)
+#
+# Explain *why* the change exists, edge cases handled, and any context.
+#
+# - What changed technically?
+# - Any tests added or commands to verify?
+# - Impacts on deployment, integrations, security posture?
+#
+# --------------------
+# Footer (optional)
+#
+# BREAKING CHANGE: describe breaking behavior (if any)
+# Closes: #ticket | Related: #issue | Co-authored-by:
+
