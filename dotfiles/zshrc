@@ -1,0 +1,204 @@
+# Enhanced zshrc with metrics and visual elements
+# Load colors
+autoload -U colors && colors
+
+
+# Heavy box drawings characters for more distinct boundaries
+local TOP_LEFT='╔'
+local TOP_RIGHT='╗'
+local BOTTOM_LEFT='╚'
+local BOTTOM_RIGHT='╝'
+local VERTICAL='║'
+local HORIZONTAL='═'
+local T_SHAPE='╠'
+
+# Function to create a horizontal line with given length
+function make_line() {
+    local length=$1
+    printf '%*s' "$length" | tr ' ' "$HORIZONTAL"
+}
+
+# Function to get CPU usage percentage
+function cpu_usage() {
+    local cpu_idle=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/")
+    local cpu_used=$(echo "100 - $cpu_idle" | bc)
+    echo "$cpu_used"
+}
+
+# Function to get memory usage
+function mem_usage() {
+    free -m | awk 'NR==2{printf "%.1f", $3*100/$2}'
+}
+
+# Function to get current system load
+function system_load() {
+    uptime | awk '{print $(NF-2)}' | sed 's/,//'
+}
+
+# Function to show git branch and status
+function git_prompt() {
+    local branch=$(git symbolic-ref HEAD 2> /dev/null | cut -d'/' -f3)
+    if [[ ! -z $branch ]]; then
+        local git_status=$(git status --porcelain 2>/dev/null)
+        if [[ ! -z $git_status ]]; then
+            echo "%F{yellow}($branch *)%f"
+        else
+            echo "%F{green}($branch)%f"
+        fi
+    fi
+}
+
+# Custom prompt sections
+function status_line() {
+    echo "${TOP_LEFT}${HORIZONTAL}[%F{cyan}%n%f@%F{green}%m%f]${HORIZONTAL}[%F{blue}%~%f]$(git_prompt)"
+}
+
+function metrics_line() {
+    echo "${T_SHAPE}${HORIZONTAL}[%F{yellow}CPU:$(cpu_usage)%%%f]${HORIZONTAL}[%F{magenta}RAM:$(mem_usage)%%%f]${HORIZONTAL}[%F{red}Load:$(system_load)%f]"
+}
+
+# Set the prompt
+setopt PROMPT_SUBST
+PROMPT='$(status_line)
+$(metrics_line)
+${BOTTOM_LEFT}${HORIZONTAL}%(?.%F{green}λ%f.%F{red}λ%f) '
+
+# History settings
+HISTFILE=~/.zsh_history
+HISTSIZE=10000
+SAVEHIST=20000
+setopt HIST_IGNORE_ALL_DUPS
+setopt HIST_SAVE_NO_DUPS
+setopt HIST_REDUCE_BLANKS
+setopt INC_APPEND_HISTORY
+setopt EXTENDED_HISTORY
+
+# force zsh to show the complete history
+alias history="history 0"
+
+#fancy super basic hack to slide in and out servers comfortably without leaving traces
+ssh-private() {
+    ssh -t "$@" "export HISTCONTROL=ignoreboth:erasedups HISTFILE=/dev/null; bash"
+}
+# Basic auto/tab completion
+autoload -Uz compinit
+compinit -d ~/.cache/zcompdump
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+
+# Better directory navigation
+setopt AUTO_CD
+setopt AUTO_PUSHD
+setopt PUSHD_IGNORE_DUPS
+setopt PUSHD_MINUS
+
+# Key bindings
+bindkey -e
+bindkey '^[[A' history-search-backward
+bindkey '^[[B' history-search-forward
+bindkey '^[[H' beginning-of-line
+bindkey '^[[F' end-of-line
+bindkey '^[[3~' delete-char
+bindkey '^[[1;5C' forward-word
+bindkey '^[[1;5D' backward-word
+
+# Color support for ls and grep
+alias ls='ls --color=auto'
+alias grep='grep --color=auto'
+alias fgrep='fgrep --color=auto'
+alias egrep='egrep --color=auto'
+
+# Useful aliases
+alias ll='ls -lh'
+alias la='ls -lah'
+alias l='ls -CF'
+alias ..='cd ..'
+alias ...='cd ../..'
+alias df='df -h'
+alias free='free -h'
+alias top='top -d 1'
+alias ports='netstat -tulanp'
+alias diff='diff --color=auto'
+alias ip='ip --color=auto'
+alias cc="sudo dnf autoremove && dnf clean all && flatpak uninstall --unused -y && flatpak remove --delete-data && sudo journalctl --vacuum-time=1weeks"
+
+# DNF package management
+alias update='sudo dnf update'
+alias install='sudo dnf install'
+alias remove='sudo dnf remove'
+alias search='dnf search'
+alias dnfl='dnf list'
+
+# Git aliases
+alias gs='git status'
+alias ga='git add'
+alias gc='git commit'
+alias gp='git push'
+alias gl='git pull'
+alias gd='git diff'
+alias gco='git checkout'
+alias gb='git branch'
+
+# Load syntax highlighting if available
+if [ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]; then
+    source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+fi
+
+# Load autosuggestions if available
+if [ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]; then
+    source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+    ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=#999'
+fi
+
+# Terminal title
+case "$TERM" in
+xterm*|rxvt*|Eterm|aterm|kterm|gnome*|alacritty)
+    precmd () {print -Pn "\e]0;%n@%m: %~\a"}
+    ;;
+esac
+
+# Extract function - handles various archive formats
+extract() {
+    if [ -f $1 ]; then
+        case $1 in
+            *.tar.bz2)   tar xjf $1     ;;
+            *.tar.gz)    tar xzf $1     ;;
+            *.bz2)       bunzip2 $1     ;;
+            *.rar)       unrar e $1     ;;
+            *.gz)        gunzip $1      ;;
+            *.tar)       tar xf $1      ;;
+            *.tbz2)      tar xjf $1     ;;
+            *.tgz)       tar xzf $1     ;;
+            *.zip)       unzip $1       ;;
+            *.Z)         uncompress $1  ;;
+            *.7z)        7z x $1        ;;
+            *)           echo "'$1' cannot be extracted via extract()" ;;
+        esac
+    else
+        echo "'$1' is not a valid file"
+    fi
+}
+
+
+# Colored man pages
+export LESS_TERMCAP_mb=$'\E[1;31m'     # begin blink
+export LESS_TERMCAP_md=$'\E[1;36m'     # begin bold
+export LESS_TERMCAP_me=$'\E[0m'        # reset bold/blink
+export LESS_TERMCAP_so=$'\E[01;33m'    # begin reverse video
+export LESS_TERMCAP_se=$'\E[0m'        # reset reverse video
+export LESS_TERMCAP_us=$'\E[1;32m'     # begin underline
+export LESS_TERMCAP_ue=$'\E[0m'        # reset underline
+
+
+# Go environment setup
+export GOPATH=$HOME/go
+export GOBIN=$GOPATH/bin
+export PATH=$PATH:$GOBIN
+export PATH=~/.cargo/bin:$PATH
+export PATH="$HOME/.config/composer/vendor/bin:$PATH"
+
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
